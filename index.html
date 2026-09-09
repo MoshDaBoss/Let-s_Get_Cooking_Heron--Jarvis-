@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Prompt Assistant</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button class="menu-button" id="menuButton" aria-label="Open app menu" aria-expanded="false">
+            <span></span>
+            <span></span>
+            <span></span>
+          </button>
+
+          <div class="brand-wrap">
+            <div class="brand-mark" id="brandMark">A</div>
+            <div class="brand-copy">
+              <p class="eyebrow">assistant</p>
+              <h1 id="assistantName" class="assistant-name" title="Double-click to rename">JARVIS</h1>
+              <input id="nameInput" type="text" value="JARVIS" maxlength="18" class="name-editor hidden" />
+            </div>
+          </div>
+        </div>
+
+        <div class="menu-panel hidden" id="menuPanel" role="menu" aria-label="Quick navigation">
+          <button type="button" class="menu-item" data-target="prompt">Prompt</button>
+          <button type="button" class="menu-item" data-target="memories">Memories</button>
+          <button type="button" class="menu-item" data-target="api-key">API Key</button>
+        </div>
+      </header>
+
+      <section class="key-panel hidden" id="apiKeyPanel">
+        <label class="key-field">
+          <span>Gemini API key</span>
+          <input id="apiKeyInput" type="password" placeholder="Enter your Gemini API key" />
+        </label>
+        <button type="button" id="saveKeyBtn" class="secondary-btn">Save key</button>
+      </section>
+
+      <div class="mode-toggle">
+        <button type="button" class="mode-btn active" data-mode="normal">Normal</button>
+        <button type="button" class="mode-btn" data-mode="context">Context Memory</button>
+      </div>
+
+      <section id="contextPanel" class="context-panel hidden">
+        <div class="context-header">
+          <h3>Task Context</h3>
+          <span>Memory attachments</span>
+        </div>
+
+        <label class="context-field">
+          <span>Upload document</span>
+          <input id="fileInput" type="file" multiple accept=".pdf,.doc,.docx,.txt,.md" />
+        </label>
+
+        <div class="context-actions">
+          <button type="button" id="addPermanentMemoryBtn" class="secondary-btn">Keep in memory</button>
+          <button type="button" id="clearMemoryBtn" class="ghost-btn danger-btn">Clear saved memory</button>
+        </div>
+
+        <label class="context-field">
+          <span>Drive / document links</span>
+          <textarea id="linkInput" rows="3" placeholder="Paste Google Drive links, doc URLs, PDFs, or reference notes..."></textarea>
+        </label>
+
+        <div class="context-list" id="contextList">
+          <p class="empty-state">No context attached yet.</p>
+        </div>
+      </section>
+
+      <main class="chat-panel" aria-live="polite">
+        <div class="message assistant">
+          <div class="avatar" id="avatarLetter">A</div>
+          <div class="bubble">
+            <p>Welcome back. Your task, should you choose to be productive, is to ask something useful. I can work with that.</p>
+          </div>
+        </div>
+      </main>
+
+      <form id="promptForm" class="composer">
+        <textarea
+          id="promptInput"
+          rows="1"
+          placeholder="Enter your prompt..."
+        ></textarea>
+        <div class="composer-actions">
+          <button type="submit" class="send-btn">Send</button>
+        </div>
+      </form>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
