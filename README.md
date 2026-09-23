@@ -3,7 +3,7 @@
 <<<<<<< HEAD
 This is my attempt to make an all-around, website-capable AI helper.
 Currently it is built for the Gemini API, but the code is general enough to transfer to other models and services.
-It is still in progress, but it is intended to handle general processing tasks and read Google Docs.
+It is still in progress, but it is intended to handle general processing tasks and read Google Docs. I used copliot to physically write out the code but I developed the code logic and flow.
 
 This project is a small Python prototype of a JARVIS-inspired AI operating model with a simple local web app frontend and Gemini-powered backend.
 =======
