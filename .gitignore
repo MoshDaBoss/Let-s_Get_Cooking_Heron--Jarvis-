@@ -1,3 +1,14 @@
 .env
 .env.*
 !.env.example
+
+# Local/generated artifacts
+__pycache__/
+.pytest_cache/
+.venv/
+.venv-*/
+.venv-build/
+build/
+dist/
+browser_profiles/
+jarvis.db
