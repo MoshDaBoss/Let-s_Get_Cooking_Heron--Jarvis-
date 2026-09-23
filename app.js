@@ -4,6 +4,8 @@ const nameInput = document.getElementById('nameInput');
 const apiKeyInput = document.getElementById('apiKeyInput');
 const apiKeyPanel = document.getElementById('apiKeyPanel');
 const saveKeyBtn = document.getElementById('saveKeyBtn');
+const googleAuthBtn = document.getElementById('googleAuthBtn');
+const gmailStatusText = document.getElementById('gmailStatusText');
 const assistantName = document.getElementById('assistantName');
 const brandMark = document.getElementById('brandMark');
 const avatarLetter = document.getElementById('avatarLetter');
@@ -15,6 +17,12 @@ const linkInput = document.getElementById('linkInput');
 const contextList = document.getElementById('contextList');
 const addPermanentMemoryBtn = document.getElementById('addPermanentMemoryBtn');
 const clearMemoryBtn = document.getElementById('clearMemoryBtn');
+const memoryBranchSelect = document.getElementById('memoryBranchSelect');
+const memoryActionSelect = document.getElementById('memoryActionSelect');
+const memoryInput = document.getElementById('memoryInput');
+const runMemoryCommandBtn = document.getElementById('runMemoryCommandBtn');
+const consolidateMemoryBtn = document.getElementById('consolidateMemoryBtn');
+const memoryOutput = document.getElementById('memoryOutput');
 const menuButton = document.getElementById('menuButton');
 const menuPanel = document.getElementById('menuPanel');
 const menuItems = document.querySelectorAll('.menu-item');
@@ -32,7 +40,7 @@ function mergePersistentContext() {
 }
 
 function updateAssistantName() {
-  const name = nameInput.value.trim() || 'JARVIS';
+  const name = nameInput.value.trim() || 'HERON';
   assistantName.textContent = name;
   nameInput.value = name;
   const initial = name.charAt(0).toUpperCase();
@@ -57,7 +65,7 @@ function enableInlineNameEditor() {
   });
 
   nameInput.addEventListener('blur', () => {
-    const normalized = nameInput.value.trim() || 'JARVIS';
+    const normalized = nameInput.value.trim() || 'HERON';
     nameInput.value = normalized;
     updateAssistantName();
     assistantName.classList.remove('hidden');
@@ -69,6 +77,38 @@ function loadSavedKey() {
   const saved = localStorage.getItem('gemini_api_key');
   if (saved) {
     apiKeyInput.value = saved;
+  }
+}
+
+async function refreshGmailStatus() {
+  try {
+    const response = await fetch('/api/google-auth/status');
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Unable to check Gmail status.');
+    }
+    const statusText = data.status === 'authorized'
+      ? `Gmail status: connected (${data.account || 'Google account'})`
+      : data.status === 'needs_auth'
+        ? 'Gmail status: ready to sign in with Google OAuth'
+        : 'Gmail status: not configured yet — add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET';
+    gmailStatusText.textContent = statusText;
+  } catch (error) {
+    gmailStatusText.textContent = `Gmail status: ${error.message}`;
+  }
+}
+
+async function startGoogleAuth() {
+  try {
+    const response = await fetch('/api/google-auth/start');
+    const data = await response.json();
+    if (!response.ok || !data.auth_url) {
+      throw new Error(data.error || data.message || 'Google OAuth is not configured yet.');
+    }
+    window.open(data.auth_url, '_blank', 'noopener,noreferrer');
+    await refreshGmailStatus();
+  } catch (error) {
+    gmailStatusText.textContent = `Gmail status: ${error.message}`;
   }
 }
 
@@ -138,6 +178,7 @@ function attachContextFromLinks() {
     }
   });
 
+  launchDetectedUrls(text);
   linkInput.value = '';
   persistMemory();
   renderContextItems();
@@ -210,12 +251,67 @@ function appendMessage(text, role = 'assistant') {
   chatPanel.scrollTop = chatPanel.scrollHeight;
 }
 
+function extractUrls(text) {
+  const matches = text.match(/https?:\/\/[^\s]+/gi) || [];
+  return [...new Set(matches.map((item) => item.trim()).filter(Boolean))];
+}
+
+function launchDetectedUrls(text) {
+  const urls = extractUrls(text);
+  urls.forEach((url) => {
+    try {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    } catch (error) {
+      console.warn('Unable to open URL in browser:', url, error);
+    }
+  });
+}
+
+function looksLikeGoogleDocContext(item) {
+  const text = (item || '').toLowerCase();
+  return /docs\.google\.com\/document|google doc|google docs|the raven|lenore|poem identified|poem:|poem in this/.test(text);
+}
+
+function isDocQuery(promptText) {
+  const text = (promptText || '').toLowerCase();
+  return /(google doc|google docs|docs\.google\.com\/document|read this|what poem|which poem|poem in this|document.*read|paste.*doc|summary of .*doc)/.test(text);
+}
+
+function sanitizeContextForPrompt(promptText) {
+  if (!contextItems.length) {
+    return [];
+  }
+
+  if (isDocQuery(promptText)) {
+    return contextItems.filter((item) => {
+      if (!item || typeof item !== 'string') {
+        return false;
+      }
+      return !looksLikeGoogleDocContext(item) || item.includes('://') === false;
+    });
+  }
+
+  return contextItems.filter((item) => {
+    if (!item || typeof item !== 'string') {
+      return false;
+    }
+    if (item.includes('://')) {
+      return false;
+    }
+    if (looksLikeGoogleDocContext(item)) {
+      return false;
+    }
+    return true;
+  });
+}
+
 function buildPromptWithContext(promptText) {
-  if (contextItems.length === 0) {
+  const relevantContext = sanitizeContextForPrompt(promptText);
+  if (relevantContext.length === 0) {
     return promptText;
   }
 
-  const contextBlock = contextItems.map((item) => `- ${item}`).join('\n');
+  const contextBlock = relevantContext.map((item) => `- ${item}`).join('\n');
   return `Task context:\n${contextBlock}\n\nUser request:\n${promptText}`;
 }
 
@@ -241,8 +337,77 @@ async function sendPromptToGemini(promptText) {
   return data.reply;
 }
 
+function setMemoryOutput(message) {
+  memoryOutput.textContent = message;
+}
+
+async function runMemoryCommand() {
+  const action = memoryActionSelect.value;
+  const branch = memoryBranchSelect.value;
+  const content = memoryInput.value.trim();
+
+  if (action !== 'consolidate' && !content) {
+    setMemoryOutput('Add a memory note or search query before running the command.');
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/memory', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(
+        action === 'consolidate'
+          ? { action: 'consolidate' }
+          : { action, branch, content }
+      ),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Memory request failed.');
+    }
+
+    if (action === 'remember') {
+      setMemoryOutput(`Saved to ${branch} memory: ${data.content || 'OK'}`);
+      memoryInput.value = '';
+      return;
+    }
+
+    if (action === 'recall') {
+      const matches = data.matches || [];
+      if (!matches.length) {
+        setMemoryOutput(`No matches found in ${branch} memory for "${content}".`);
+        return;
+      }
+
+      const preview = matches.slice(0, 4).map((item) => `- ${item.content}`).join('\n');
+      setMemoryOutput(`Found ${matches.length} result(s) in ${branch} memory:\n${preview}`);
+      return;
+    }
+
+    if (action === 'forget') {
+      const deleted = data.deleted ?? 0;
+      setMemoryOutput(`Removed ${deleted} memory item(s) from ${branch} memory.`);
+      memoryInput.value = '';
+      return;
+    }
+
+    const summary = data.summary || {};
+    const lines = Object.entries(summary).map(([key, items]) => {
+      const value = Array.isArray(items) && items.length ? items.join(' | ') : 'none';
+      return `${key}: ${value}`;
+    });
+    setMemoryOutput(lines.join('\n') || 'No memory stored yet.');
+  } catch (error) {
+    setMemoryOutput(error.message || 'Unable to update memory.');
+  }
+}
+
 nameInput.addEventListener('input', updateAssistantName);
 saveKeyBtn.addEventListener('click', saveKey);
+googleAuthBtn.addEventListener('click', startGoogleAuth);
 
 addPermanentMemoryBtn.addEventListener('click', () => {
   persistMemory();
@@ -295,6 +460,19 @@ modeButtons.forEach((button) => {
   });
 });
 
+runMemoryCommandBtn.addEventListener('click', runMemoryCommand);
+consolidateMemoryBtn.addEventListener('click', async () => {
+  memoryActionSelect.value = 'consolidate';
+  await runMemoryCommand();
+});
+
+memoryInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    runMemoryCommand();
+  }
+});
+
 fileInput.addEventListener('change', attachFiles);
 linkInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
@@ -309,6 +487,22 @@ promptForm.addEventListener('submit', async (event) => {
 
   if (!text) {
     return;
+  }
+
+  const detectedUrls = extractUrls(text);
+  detectedUrls.forEach((url) => {
+    if (!contextItems.includes(url)) {
+      contextItems.push(url);
+    }
+    try {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    } catch (error) {
+      console.warn('Unable to open URL from prompt:', url, error);
+    }
+  });
+  if (detectedUrls.length) {
+    persistMemory();
+    renderContextItems();
   }
 
   appendMessage(text, 'user');
@@ -344,5 +538,6 @@ promptInput.addEventListener('keydown', (event) => {
 updateAssistantName();
 enableInlineNameEditor();
 loadSavedKey();
+refreshGmailStatus();
 mergePersistentContext();
 renderContextItems();

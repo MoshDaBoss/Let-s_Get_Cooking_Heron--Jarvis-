@@ -1,0 +1,41 @@
+name: Build desktop app
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: linux
+          - os: windows-latest
+            artifact: windows
+          - os: macos-latest
+            artifact: macos
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Build desktop bundle
+        run: python build_desktop.py
+
+      - name: Upload desktop bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: JarvisApp-${{ matrix.artifact }}
+          path: dist/*.zip

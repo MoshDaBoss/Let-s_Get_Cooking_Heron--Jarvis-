@@ -23,8 +23,8 @@
             <div class="brand-mark" id="brandMark">A</div>
             <div class="brand-copy">
               <p class="eyebrow">assistant</p>
-              <h1 id="assistantName" class="assistant-name" title="Double-click to rename">JARVIS</h1>
-              <input id="nameInput" type="text" value="JARVIS" maxlength="18" class="name-editor hidden" />
+              <h1 id="assistantName" class="assistant-name" title="Double-click to rename">HERON</h1>
+              <input id="nameInput" type="text" value="HERON" maxlength="18" class="name-editor hidden" />
             </div>
           </div>
         </div>
@@ -41,7 +41,11 @@
           <span>Gemini API key</span>
           <input id="apiKeyInput" type="password" placeholder="Enter your Gemini API key" />
         </label>
-        <button type="button" id="saveKeyBtn" class="secondary-btn">Save key</button>
+        <div class="memory-actions">
+          <button type="button" id="saveKeyBtn" class="secondary-btn">Save key</button>
+          <button type="button" id="googleAuthBtn" class="secondary-btn">Connect Gmail</button>
+        </div>
+        <div id="gmailStatusText" class="memory-output">Gmail status: checking…</div>
       </section>
 
       <div class="mode-toggle">
@@ -63,6 +67,41 @@
         <div class="context-actions">
           <button type="button" id="addPermanentMemoryBtn" class="secondary-btn">Keep in memory</button>
           <button type="button" id="clearMemoryBtn" class="ghost-btn danger-btn">Clear saved memory</button>
+        </div>
+
+        <div class="memory-manager">
+          <div class="context-header memory-header">
+            <h3>Memory Manager</h3>
+            <span>Working / episodic / semantic</span>
+          </div>
+
+          <div class="memory-controls">
+            <select id="memoryBranchSelect" class="memory-select">
+              <option value="working">Working</option>
+              <option value="episodic">Episodic</option>
+              <option value="semantic">Semantic</option>
+              <option value="auth">Auth Account</option>
+            </select>
+
+            <select id="memoryActionSelect" class="memory-select">
+              <option value="remember">Remember</option>
+              <option value="recall">Recall</option>
+              <option value="forget">Forget</option>
+              <option value="consolidate">Consolidate</option>
+            </select>
+          </div>
+
+          <label class="context-field">
+            <span>Memory entry</span>
+            <textarea id="memoryInput" rows="3" placeholder="Type a memory note or a recall query..."></textarea>
+          </label>
+
+          <div class="memory-actions">
+            <button type="button" id="runMemoryCommandBtn" class="secondary-btn">Run memory action</button>
+            <button type="button" id="consolidateMemoryBtn" class="ghost-btn">Consolidate now</button>
+          </div>
+
+          <div id="memoryOutput" class="memory-output">No memory command run yet.</div>
         </div>
 
         <label class="context-field">

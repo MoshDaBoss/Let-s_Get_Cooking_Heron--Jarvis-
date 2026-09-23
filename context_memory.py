@@ -68,7 +68,7 @@ def _extract_pdf_details(file_path: Path) -> dict:
         except Exception:
             text_parts = []
 
-    raw_bytes = file_path.read_bytes(errors="ignore") if hasattr(file_path.read_bytes, "__call__") else b""
+    raw_bytes = file_path.read_bytes()
     if b"/XObject" in raw_bytes or b"/Image" in raw_bytes:
         image_names.append("embedded image(s) detected")
 
