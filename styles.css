@@ -350,6 +350,48 @@ button, textarea, input {
   display: none;
 }
 
+.memory-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(8, 17, 13, 0.72);
+}
+
+.memory-header {
+  margin-bottom: 0;
+}
+
+.memory-controls,
+.memory-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.memory-select {
+  flex: 1 1 160px;
+  min-height: 42px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(10, 18, 15, 0.9);
+  color: var(--text);
+  padding: 0 12px;
+}
+
+.memory-output {
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(8, 14, 12, 0.8);
+  color: var(--muted);
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
 .context-actions {
   display: flex;
   justify-content: space-between;
