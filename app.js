@@ -243,7 +243,9 @@ function appendMessage(text, role = 'assistant') {
 
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
-  bubble.innerHTML = `<p>${text}</p>`;
+  const paragraph = document.createElement('p');
+  paragraph.textContent = String(text ?? '');
+  bubble.appendChild(paragraph);
 
   wrapper.appendChild(avatar);
   wrapper.appendChild(bubble);
@@ -334,7 +336,47 @@ async function sendPromptToGemini(promptText) {
     throw new Error(data.error || 'Something went wrong while contacting Gemini.');
   }
 
-  return data.reply;
+  return data;
+}
+
+function appendEmailDraft(draft) {
+  const card = document.createElement('div');
+  card.className = 'email-draft';
+
+  const details = document.createElement('p');
+  details.textContent = `To: ${draft.recipient}\nSubject: ${draft.subject}\n\n${draft.body}`;
+
+  const sendButton = document.createElement('button');
+  sendButton.type = 'button';
+  sendButton.textContent = 'Send this email';
+
+  const status = document.createElement('p');
+  status.setAttribute('role', 'status');
+  status.textContent = 'Review the recipient, subject, and message before sending.';
+
+  sendButton.addEventListener('click', async () => {
+    sendButton.disabled = true;
+    status.textContent = 'Sending…';
+    try {
+      const response = await fetch('/api/email/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(draft),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error || 'Email could not be sent.');
+      }
+      status.textContent = result.message || 'Email sent.';
+    } catch (error) {
+      status.textContent = error.message || 'Email could not be sent.';
+      sendButton.disabled = false;
+    }
+  });
+
+  card.append(details, sendButton, status);
+  chatPanel.appendChild(card);
+  chatPanel.scrollTop = chatPanel.scrollHeight;
 }
 
 function setMemoryOutput(message) {
@@ -510,18 +552,26 @@ promptForm.addEventListener('submit', async (event) => {
 
   const loading = document.createElement('div');
   loading.className = 'message assistant';
-  loading.innerHTML = `
-    <div class="avatar">${assistantName.textContent.charAt(0).toUpperCase()}</div>
-    <div class="bubble"><p>Thinking...</p></div>
-  `;
+  const loadingAvatar = document.createElement('div');
+  loadingAvatar.className = 'avatar';
+  loadingAvatar.textContent = assistantName.textContent.charAt(0).toUpperCase();
+  const loadingBubble = document.createElement('div');
+  loadingBubble.className = 'bubble';
+  const loadingText = document.createElement('p');
+  loadingText.textContent = 'Thinking…';
+  loadingBubble.appendChild(loadingText);
+  loading.append(loadingAvatar, loadingBubble);
   chatPanel.appendChild(loading);
   chatPanel.scrollTop = chatPanel.scrollHeight;
 
   try {
     const enrichedPrompt = buildPromptWithContext(text);
-    const reply = await sendPromptToGemini(enrichedPrompt);
+    const result = await sendPromptToGemini(enrichedPrompt);
     loading.remove();
-    appendMessage(reply, 'assistant');
+    appendMessage(result.reply || '', 'assistant');
+    if (result.email_draft) {
+      appendEmailDraft(result.email_draft);
+    }
   } catch (error) {
     loading.remove();
     appendMessage(error.message || 'I hit an error while responding.', 'assistant');
