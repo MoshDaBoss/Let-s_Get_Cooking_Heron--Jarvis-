@@ -636,20 +636,30 @@ class BrowserAgent:
             default_url = "https://xeramail.com/"
 
         if url:
-            if self.sandbox.page is None or not self.sandbox.browser_active:
+            if self.sandbox.page is None or not self.sandbox.browser_active or self.sandbox.current_url != url:
                 self.sandbox.open_browser(url)
             steps.append({"kind": "open", "url": url})
             action_log.append({"action": "open", "url": url})
         elif default_url:
-            if self.sandbox.page is None or not self.sandbox.browser_active:
+            requested_host = default_url.split("://", 1)[-1].split("/", 1)[0].lower()
+            current_url = (self.sandbox.current_url or "").lower()
+            if self.sandbox.page is None or not self.sandbox.browser_active or requested_host not in current_url:
                 self.sandbox.open_browser(default_url)
+                steps.append({"kind": "open", "url": default_url})
+                action_log.append({"action": "open", "url": default_url})
             else:
-                steps.append({"kind": "open", "url": self.sandbox.current_url or default_url, "details": "kept the current browser tab open for the requested site flow"})
-                action_log.append({"action": "open", "url": self.sandbox.current_url or default_url, "details": "kept the current browser tab open for the requested site flow"})
+                steps.append({"kind": "open", "url": self.sandbox.current_url, "details": "kept the current browser tab open on the requested site"})
+                action_log.append({"action": "open", "url": self.sandbox.current_url, "details": "kept the current browser tab open on the requested site"})
         elif "open" in lowered or "visit" in lowered or "browse" in lowered:
-            open_url = self.sandbox.current_url or url or "site"
-            steps.append({"kind": "open", "url": open_url, "details": "opened the site before browsing"})
-            action_log.append({"action": "open", "url": open_url, "details": "opened the site before browsing"})
+            if not self.sandbox.current_url:
+                return {
+                    "status": "unsupported",
+                    "task": instruction,
+                    "message": "Please name the site or include its URL so I know what to open.",
+                    "steps": [],
+                }
+            steps.append({"kind": "observe", "details": "using the current browser page"})
+            action_log.append({"action": "observe", "details": "using the current browser page"})
 
         if self.sandbox.page is None:
             self.sandbox._ensure_browser()
