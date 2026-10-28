@@ -968,7 +968,10 @@ class SandboxedVM:
                 for idx in range(min(locator.count(), 6)):
                     element = locator.nth(idx)
                     try:
-                        if element.is_visible():
+                        is_editable = element.evaluate(
+                            "(el) => el.isContentEditable || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA'"
+                        )
+                        if element.is_visible() and is_editable:
                             matches.append(selector)
                             break
                     except Exception:
