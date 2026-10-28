@@ -3,6 +3,7 @@ import ipaddress
 import json
 import os
 import re
+import secrets
 import sys
 import tempfile
 from email.mime.text import MIMEText
@@ -16,6 +17,7 @@ from jarvis import BrowserAgent, MemoryManager, SandboxedVM, SYSTEM_PROMPT, is_b
 ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 WEB_ROOT = ROOT / "_internal" if getattr(sys, "frozen", False) and (ROOT / "_internal").exists() else ROOT
 MEMORY_MANAGER = MemoryManager(ROOT / "jarvis.db")
+OAUTH_STATE: str | None = None
 DEFAULT_GEMINI_MODELS = (
     "gemini-3.6-flash",
 )
@@ -371,7 +373,7 @@ def load_gemini_key():
     return get_env_value("GEMINI_API_KEY")
 
 
-def build_google_auth_url() -> str:
+def build_google_auth_url(state: str | None = None) -> str:
     client_id = get_env_value("GOOGLE_CLIENT_ID") or ""
     if not client_id:
         return ""
@@ -395,6 +397,8 @@ def build_google_auth_url() -> str:
         "prompt": "consent",
         "include_granted_scopes": "true",
     }
+    if state:
+        params["state"] = state
     return "https://accounts.google.com/o/oauth2/v2/auth?" + parse.urlencode(params)
 
 
@@ -724,7 +728,8 @@ class AppHandler(SimpleHTTPRequestHandler):
             return False
 
         origin = self.headers.get("Origin")
-        if origin:
+        is_oauth_callback = self.path.split("?", 1)[0] == "/api/google-auth/callback"
+        if origin and not is_oauth_callback:
             try:
                 parsed_origin = parse.urlsplit(origin)
                 origin_host = parsed_origin.hostname or ""
@@ -750,11 +755,13 @@ class AppHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/google-auth/start":
             try:
+                global OAUTH_STATE
                 status = get_gmail_status()
                 if status["status"] == "not_configured":
                     self._send_json(400, status)
                     return
-                self._send_json(200, {"status": "ok", "auth_url": status.get("auth_url") or build_google_auth_url()})
+                OAUTH_STATE = secrets.token_urlsafe(32)
+                self._send_json(200, {"status": "ok", "auth_url": build_google_auth_url(state=OAUTH_STATE)})
                 return
             except Exception as exc:
                 self._send_json(500, {"error": str(exc)})
@@ -770,10 +777,16 @@ class AppHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/google-auth/callback":
             try:
-                code = parse.parse_qs(parsed.query).get("code", [""])[0]
+                query = parse.parse_qs(parsed.query)
+                code = query.get("code", [""])[0]
+                returned_state = query.get("state", [""])[0]
                 if not code:
                     self._send_json(400, {"error": "Missing OAuth code."})
                     return
+                if not OAUTH_STATE or not returned_state or not secrets.compare_digest(returned_state, OAUTH_STATE):
+                    self._send_json(403, {"error": "OAuth state validation failed. Start Google sign-in again."})
+                    return
+                OAUTH_STATE = None
 
                 client_id = get_env_value("GOOGLE_CLIENT_ID")
                 client_secret = get_env_value("GOOGLE_CLIENT_SECRET")
