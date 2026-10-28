@@ -1,4 +1,5 @@
 import base64
+import ipaddress
 import json
 import os
 import re
@@ -174,7 +175,6 @@ def build_dom_paste_plan(prompt: str, auth_account: str | None = None) -> dict:
         "div[contenteditable='true']",
         "[role='textbox']",
         "textarea",
-        "body",
     ]
 
     return {
@@ -229,7 +229,7 @@ def read_google_doc_summary(document_url: str | None) -> dict:
         title = "Google Doc"
         if "docs.google.com/document" in url.lower():
             title = "Google Doc"
-        summary = re.sub(r"\s+", " ", export_text)[:1800].strip()
+        summary = re.sub(r"\s+", " ", export_text)[:12000].strip()
         return {
             "status": "ok",
             "url": url,
@@ -244,9 +244,11 @@ def read_google_doc_summary(document_url: str | None) -> dict:
         if page is None:
             return {"status": "error", "message": "The browser could not load the document."}
 
+        if "accounts.google.com" in (page.url or "").lower():
+            return {"status": "error", "message": "This Google Doc requires an authenticated Google session. The current JARVIS document reader does not have one."}
         title = (page.title() or "Google Doc").strip() or "Google Doc"
         body_text = (page.locator("body").inner_text() or "").strip()
-        summary = re.sub(r"\s+", " ", body_text)[:1800].strip()
+        summary = re.sub(r"\s+", " ", body_text)[:12000].strip()
         return {
             "status": "ok",
             "url": page.url,
@@ -702,8 +704,49 @@ class AppHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(WEB_ROOT), **kwargs)
 
+    def _allow_local_api_request(self) -> bool:
+        """Reject LAN and cross-origin requests to the local-control API."""
+        try:
+            if not ipaddress.ip_address(self.client_address[0]).is_loopback:
+                return False
+        except (ValueError, IndexError):
+            return False
+
+        host = (self.headers.get("Host") or "").strip()
+        try:
+            host_name = parse.urlsplit("//" + host).hostname
+            if not host_name:
+                return False
+            host_is_loopback = host_name.lower() == "localhost" or ipaddress.ip_address(host_name).is_loopback
+            if not host_is_loopback:
+                return False
+        except ValueError:
+            return False
+
+        origin = self.headers.get("Origin")
+        if origin:
+            try:
+                parsed_origin = parse.urlsplit(origin)
+                origin_host = parsed_origin.hostname or ""
+                origin_is_loopback = origin_host.lower() == "localhost" or ipaddress.ip_address(origin_host).is_loopback
+                if parsed_origin.scheme != "http" or not origin_is_loopback:
+                    return False
+                if parsed_origin.netloc.lower() != host.lower():
+                    return False
+            except ValueError:
+                return False
+        return True
+
+    def _reject_nonlocal_api_request(self) -> bool:
+        if not self._allow_local_api_request():
+            self._send_json(403, {"error": "This local API accepts same-origin requests from this computer only."})
+            return True
+        return False
+
     def do_GET(self):
         parsed = parse.urlparse(self.path)
+        if parsed.path.startswith("/api/") and self._reject_nonlocal_api_request():
+            return
 
         if parsed.path == "/api/google-auth/start":
             try:
@@ -791,6 +834,30 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = parse.urlparse(self.path)
+        if parsed.path.startswith("/api/") and self._reject_nonlocal_api_request():
+            return
+
+        if parsed.path == "/api/email/send":
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                recipient = str(payload.get("recipient", "")).strip()
+                subject = str(payload.get("subject", "")).strip()
+                body = str(payload.get("body", "")).strip()
+                if not re.fullmatch(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", recipient):
+                    self._send_json(400, {"error": "A valid recipient address is required."})
+                    return
+                tokens = load_google_oauth_tokens()
+                access_token = (tokens or {}).get("access_token")
+                if not access_token:
+                    self._send_json(401, {"error": "Connect Gmail before sending a message."})
+                    return
+                result = send_gmail_message(recipient, subject, body, access_token=access_token)
+                status = 200 if result.get("status") == "ok" else 502
+                self._send_json(status, result)
+            except Exception as exc:
+                self._send_json(500, {"error": str(exc)})
+            return
 
         if parsed.path == "/api/chat":
             try:
@@ -816,7 +883,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                     auth_account = MEMORY_MANAGER.get_auth_account()
                     sandbox_result = run_google_doc_paste(prompt, auth_account=auth_account)
                     if sandbox_result and sandbox_result.get("status") == "ok":
-                        self._send_json(200, {"reply": f"Pasted into the Google Doc at {sandbox_result['url']} with the requested text."})
+                        self._send_json(200, {"reply": f"Inserted the text in the editor at {sandbox_result['url']}. Please verify Google Docs saved the change."})
                         return
                     if sandbox_result and sandbox_result.get("status") == "pending_login":
                         self._send_json(200, {"reply": sandbox_result["message"]})
@@ -850,32 +917,14 @@ class AppHandler(SimpleHTTPRequestHandler):
 
                 email_task = parse_email_task(prompt)
                 if email_task.get("recipient"):
-                    tokens = load_google_oauth_tokens()
-                    access_token = (tokens or {}).get("access_token")
-                    if not access_token:
-                        status = get_gmail_status()
-                        self._send_json(200, {
-                            "reply": f"Email sending requires Google authentication. {status.get('message', '')}",
-                            "gmail_status": status,
-                        })
-                        return
-
-                    result = send_gmail_message(
-                        recipient=email_task["recipient"],
-                        subject=email_task.get("subject") or "Message from JARVIS",
-                        body=email_task.get("body") or "Hello!",
-                        access_token=access_token,
-                    )
-                    if result.get("status") == "ok":
-                        self._send_json(200, {
-                            "reply": f"Sent an email to {email_task['recipient']} with the requested message.",
-                            "gmail_result": result,
-                        })
-                    else:
-                        self._send_json(200, {
-                            "reply": result.get("message", "Unable to send the email."),
-                            "gmail_result": result,
-                        })
+                    self._send_json(200, {
+                        "reply": "Review this draft and explicitly choose Send before Jarvis sends it.",
+                        "email_draft": {
+                            "recipient": email_task["recipient"],
+                            "subject": email_task.get("subject") or "Message from JARVIS",
+                            "body": email_task.get("body") or "Hello!",
+                        },
+                    })
                     return
 
                 route_decision = classify_browser_route(prompt, api_key=api_key, context=context)
@@ -884,9 +933,13 @@ class AppHandler(SimpleHTTPRequestHandler):
                     agent = BrowserAgent(sandbox=sandbox)
                     default_url = infer_browser_target(prompt)
                     agent_result = agent.run(prompt, url=default_url)
-                    summary = agent_result.get("result", {}).get("page_text") or agent_result.get("result", {}).get("title") or "Browser task completed."
+                    summary = agent_result.get("result", {}).get("page_text") or agent_result.get("result", {}).get("title") or ""
+                    if agent_result.get("status") != "ok":
+                        reply_text = agent_result.get("message") or "I could not complete that browser action."
+                    else:
+                        reply_text = f"Browser task completed: {summary[:2000]}" if summary else "Browser task completed."
                     browser_reply = {
-                        "reply": f"Browser task completed: {summary[:2000]}",
+                        "reply": reply_text,
                         "browser_result": agent_result,
                     }
                     self._send_json(200, browser_reply)
@@ -990,12 +1043,13 @@ class AppHandler(SimpleHTTPRequestHandler):
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         self.wfile.write(body)
 
 
 if __name__ == "__main__":
-    server = ThreadingHTTPServer(("0.0.0.0", 8000), AppHandler)
+    server = ThreadingHTTPServer(("127.0.0.1", 8000), AppHandler)
     print("JARVIS server running on http://localhost:8000")
     server.serve_forever()
