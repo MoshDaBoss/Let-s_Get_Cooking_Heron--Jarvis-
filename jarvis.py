@@ -185,6 +185,9 @@ class PageProxy(_PlaywrightObject):
             return LocatorProxy(self._worker, result._ref_id)
         return LocatorProxy(self._worker, result)
 
+    def input_value(self, selector):
+        return self.locator(selector).input_value()
+
     def screenshot(self, *args, **kwargs):
         return self._call("screenshot", *args, **kwargs)
 
@@ -198,6 +201,9 @@ class LocatorProxy(_PlaywrightObject):
 
     def fill(self, *args, **kwargs):
         return self._call("fill", *args, **kwargs)
+
+    def input_value(self):
+        return self._call("input_value")
 
     def press(self, *args, **kwargs):
         return self._call("press", *args, **kwargs)
@@ -219,7 +225,7 @@ class LocatorProxy(_PlaywrightObject):
 
     @property
     def first(self):
-        return LocatorProxy(self._worker, self._call("first")._ref_id)
+        return LocatorProxy(self._worker, self._getattr("first")._ref_id)
 
     def nth(self, index):
         return LocatorProxy(self._worker, self._call("nth", index)._ref_id)
@@ -624,6 +630,14 @@ class BrowserAgent:
         query = self._extract_search_query(instruction)
         click_target = self._extract_click_target(instruction)
         lowered = instruction.lower()
+        if "send" in lowered and ("email" in lowered or "xeramail" in lowered):
+            return {
+                "status": "unsupported",
+                "task": instruction,
+                "message": "Email actions must use the review-and-send flow in chat; I will not submit an email form directly.",
+                "steps": [],
+                "action_log": [],
+            }
         action_log = []
         steps = []
 
@@ -658,8 +672,8 @@ class BrowserAgent:
                     "message": "Please name the site or include its URL so I know what to open.",
                     "steps": [],
                 }
-            steps.append({"kind": "observe", "details": "using the current browser page"})
-            action_log.append({"action": "observe", "details": "using the current browser page"})
+            steps.append({"kind": "open", "url": self.sandbox.current_url, "details": "the requested site is already open"})
+            action_log.append({"action": "open", "url": self.sandbox.current_url, "details": "the requested site is already open"})
 
         if self.sandbox.page is None:
             self.sandbox._ensure_browser()
