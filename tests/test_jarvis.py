@@ -291,7 +291,7 @@ def test_infer_browser_target_detects_xeramail():
     assert target == "https://xeramail.com/"
 
 
-def test_browser_agent_handles_xeramail_compose_flow():
+def test_browser_agent_requires_confirmed_email_flow_instead_of_submitting_forms():
     sandbox = SandboxedVM()
     sandbox.open_browser(
         "data:text/html,<html><body><input id='to' /><input id='subject' /><textarea id='message'></textarea><button id='send'>Send</button></body></html>"
@@ -300,9 +300,10 @@ def test_browser_agent_handles_xeramail_compose_flow():
 
     result = agent.run("Use xeramail to send hello@example.com a message saying hello there", url=None)
 
-    assert result["status"] == "ok"
-    assert any(entry.get("action") == "fill" and "to" in str(entry.get("target", "")) for entry in result["action_log"])
-    assert any(entry.get("action") == "click" for entry in result["action_log"])
+    assert result["status"] == "unsupported"
+    assert "review-and-send" in result["message"]
+    assert result["action_log"] == []
+    assert sandbox.page.input_value("#to") == ""
 
     sandbox.close_browser()
 
