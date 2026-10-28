@@ -690,46 +690,6 @@ class BrowserAgent:
                         "result": result_state,
                     }
 
-        if "xeramail" in lowered or "send" in lowered:
-            fill_targets = [
-                ("to", "hello@example.com"),
-                ("subject", "Test message"),
-                ("message", "hello there"),
-                ("body", "hello there"),
-            ]
-            for field_name, value in fill_targets:
-                for element in state.get("elements", []):
-                    element_id = str(element.get("id", "") or "").lower()
-                    if field_name in element_id or field_name in str(element.get("label", "") or "").lower() or field_name in str(element.get("text", "") or "").lower():
-                        self.sandbox.execute_action({"action": "fill", "target": element["id"], "value": value})
-                        action_log.append({"action": "fill", "target": element["id"], "value": value})
-                        steps.append({"kind": "fill", "target": element["id"], "value": value})
-                        break
-
-            for element in state.get("elements", []):
-                element_id = str(element.get("id", "") or "").lower()
-                text = str(element.get("text", "") or "").lower()
-                if "send" in element_id or "send" in text or element.get("type") == "button":
-                    self.sandbox.execute_action({"action": "click", "target": element["id"]})
-                    action_log.append({"action": "click", "target": element["id"]})
-                    steps.append({"kind": "click", "target": element["id"]})
-                    break
-
-            if action_log:
-                result_state = self.sandbox.get_state()
-                steps.append({"kind": "observe", "details": "verified the compose page state after filling and sending"})
-                action_log.append({"action": "observe", "details": "verified the compose page state after filling and sending"})
-                return {
-                    "status": "ok",
-                    "task": instruction,
-                    "url": self.sandbox.current_url,
-                    "interaction_style": "human_like",
-                    "step_count": len(steps),
-                    "steps": steps,
-                    "action_log": action_log,
-                    "result": result_state,
-                }
-
         if click_target:
             target_element = None
             for element in state["elements"]:
@@ -770,6 +730,19 @@ class BrowserAgent:
                 "steps": steps,
                 "action_log": action_log,
                 "result": result_state,
+            }
+
+        if not any(step.get("kind") in {"open", "fill", "click"} for step in steps) and not any(
+            word in lowered for word in ["inspect", "read", "results", "summarize"]
+        ):
+            return {
+                "status": "unsupported",
+                "task": instruction,
+                "url": self.sandbox.current_url,
+                "message": "I could not identify a supported browser action for this request, so I made no changes.",
+                "step_count": len(steps),
+                "steps": steps,
+                "result": state,
             }
 
         if not action_log:
@@ -960,7 +933,6 @@ class SandboxedVM:
             "div[aria-label*='document' i]",
             "div[aria-label*='content' i]",
             "div[aria-label*='text' i]",
-            "body",
         ]
 
         matches = []
@@ -968,9 +940,6 @@ class SandboxedVM:
             try:
                 locator = self.page.locator(selector)
                 if locator.count() == 0:
-                    continue
-                if selector == "body":
-                    matches.append(selector)
                     continue
                 for idx in range(min(locator.count(), 6)):
                     element = locator.nth(idx)
@@ -1102,7 +1071,7 @@ class SandboxedVM:
 
         selectors = [target_selector] if target_selector else []
         if target_selector == "body":
-            selectors.extend(self.find_editable_targets() or ["body"])
+            selectors = self.find_editable_targets()
 
         last_error = None
         for selector in selectors:
@@ -1110,12 +1079,11 @@ class SandboxedVM:
                 locator = self.page.locator(selector)
                 if locator.count() == 0:
                     continue
-                locator.first.click(timeout=10000)
-                locator.first.evaluate(
-                    "(element, text) => { element.innerText = text; element.textContent = text; element.dispatchEvent(new InputEvent('input', {bubbles: true})); }",
-                    value,
-                )
-                return {"status": "ok", "selector": selector, "value": value}
+                locator.first.fill(value)
+                current_value = locator.first.evaluate("(element) => element.value ?? element.innerText")
+                if value not in current_value:
+                    continue
+                return {"status": "ok", "selector": selector, "value": value, "verified_in_editor": True}
             except Exception as exc:
                 last_error = exc
                 continue
@@ -1165,7 +1133,7 @@ class SandboxedVM:
 
             selectors = [target_selector] if target_selector else []
             if target_selector == "body":
-                selectors.extend(self.find_editable_targets() or ["body"])
+                selectors = self.find_editable_targets()
 
             last_error = None
             for candidate in selectors:
@@ -1173,12 +1141,11 @@ class SandboxedVM:
                     locator = self.page.locator(candidate)
                     if locator.count() == 0:
                         continue
-                    locator.first.click(timeout=10000)
-                    locator.first.evaluate(
-                        "(element, text) => { element.innerText = text; element.textContent = text; element.dispatchEvent(new InputEvent('input', {bubbles: true})); }",
-                        text_value,
-                    )
-                    return {"status": "ok", "action": action_type, "target": candidate, "value": text_value}
+                    locator.first.fill(text_value)
+                    current_value = locator.first.evaluate("(element) => element.value ?? element.innerText")
+                    if text_value not in current_value:
+                        continue
+                    return {"status": "ok", "action": action_type, "target": candidate, "value": text_value, "verified_in_editor": True}
                 except Exception as exc:
                     last_error = exc
                     continue
