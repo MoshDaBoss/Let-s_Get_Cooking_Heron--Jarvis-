@@ -440,7 +440,7 @@ def test_sandbox_can_attempt_google_doc_paste():
 
 def test_sandbox_finds_google_doc_like_editable_targets():
     sandbox = SandboxedVM()
-    sandbox.open_browser("data:text/html,<html><body><div role='textbox' aria-label='Document content'>Start</div></body></html>")
+    sandbox.open_browser("data:text/html,<html><body><div role='textbox' contenteditable='true' aria-label='Document content'>Start</div></body></html>")
 
     candidates = sandbox.find_editable_targets()
     assert candidates
