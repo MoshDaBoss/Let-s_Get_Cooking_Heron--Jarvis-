@@ -1,14 +1,8 @@
-# Let-s_Get_Cooking_Jarvis-_Gemini-
+# JARVIS
 
-<<<<<<< HEAD
-This is my attempt to make an all-around, website-capable AI helper.
-Currently it is built for the Gemini API, but the code is general enough to transfer to other models and services.
-It is still in progress, but it is intended to handle general processing tasks and read Google Docs. I used copliot to physically write out the code but I developed the code logic and flow.
+JARVIS is an in-progress local assistant with a web interface, a Gemini backend, persistent memory, document context, and experimental browser automation. The longer-term goal is an all-around, website-capable helper that can handle general processing tasks and work with Google Docs.
 
-This project is a small Python prototype of a JARVIS-inspired AI operating model with a simple local web app frontend and Gemini-powered backend.
-=======
-This project is a small Python desktop app with a local web frontend and a configurable AI backend. Gemini is supported by default, and the app can be packaged as a downloadable desktop build.
->>>>>>> 0eb4756 (Package desktop app and fix document uploads)
+The current browser and document features are prototypes. Browser actions are rule-based, and the browser runs as a local Playwright process; it is not isolated in a virtual machine. Google Docs access is limited to documents the current reader can access without signing into a Google account.
 
 ## Run it locally
 
@@ -74,9 +68,9 @@ AI_MODEL=your-model-name
 
 The system is organized into three layers:
 
-- JARVIS Brain: understands the user objective, selects tools, and generates a structured plan.
-- Local Controller: turns the plan into concrete actions to run in the local runtime.
-- Sandboxed VM: hosts the browser and UI/vision capabilities used by the controller.
+- JARVIS Brain: a prototype task planner with keyword-based tool selection.
+- Local Controller: currently returns a proposed action list; the browser flow does not yet execute a general model-generated plan.
+- Browser runtime: a local Playwright Chromium process used for page inspection and limited interactions; it is not an OS-level sandbox or VM.
 
 ## Components
 
