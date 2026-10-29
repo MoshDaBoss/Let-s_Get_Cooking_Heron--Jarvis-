@@ -185,8 +185,21 @@ class PageProxy(_PlaywrightObject):
             return LocatorProxy(self._worker, result._ref_id)
         return LocatorProxy(self._worker, result)
 
+    def input_value(self, selector):
+        return self.locator(selector).input_value()
+
+    def frame_locator(self, selector):
+        result = self._call("frame_locator", selector)
+        return FrameLocatorProxy(self._worker, result._ref_id)
+
     def screenshot(self, *args, **kwargs):
         return self._call("screenshot", *args, **kwargs)
+
+
+class FrameLocatorProxy(_PlaywrightObject):
+    def locator(self, selector):
+        result = self._call("locator", selector)
+        return LocatorProxy(self._worker, result._ref_id)
 
 
 class LocatorProxy(_PlaywrightObject):
@@ -198,6 +211,9 @@ class LocatorProxy(_PlaywrightObject):
 
     def fill(self, *args, **kwargs):
         return self._call("fill", *args, **kwargs)
+
+    def input_value(self):
+        return self._call("input_value")
 
     def press(self, *args, **kwargs):
         return self._call("press", *args, **kwargs)
@@ -219,7 +235,7 @@ class LocatorProxy(_PlaywrightObject):
 
     @property
     def first(self):
-        return LocatorProxy(self._worker, self._call("first")._ref_id)
+        return LocatorProxy(self._worker, self._getattr("first")._ref_id)
 
     def nth(self, index):
         return LocatorProxy(self._worker, self._call("nth", index)._ref_id)
@@ -624,6 +640,14 @@ class BrowserAgent:
         query = self._extract_search_query(instruction)
         click_target = self._extract_click_target(instruction)
         lowered = instruction.lower()
+        if "send" in lowered and ("email" in lowered or "xeramail" in lowered):
+            return {
+                "status": "unsupported",
+                "task": instruction,
+                "message": "Email actions must use the review-and-send flow in chat; I will not submit an email form directly.",
+                "steps": [],
+                "action_log": [],
+            }
         action_log = []
         steps = []
 
@@ -636,20 +660,30 @@ class BrowserAgent:
             default_url = "https://xeramail.com/"
 
         if url:
-            if self.sandbox.page is None or not self.sandbox.browser_active:
+            if self.sandbox.page is None or not self.sandbox.browser_active or self.sandbox.current_url != url:
                 self.sandbox.open_browser(url)
             steps.append({"kind": "open", "url": url})
             action_log.append({"action": "open", "url": url})
         elif default_url:
-            if self.sandbox.page is None or not self.sandbox.browser_active:
+            requested_host = default_url.split("://", 1)[-1].split("/", 1)[0].lower()
+            current_url = (self.sandbox.current_url or "").lower()
+            if self.sandbox.page is None or not self.sandbox.browser_active or requested_host not in current_url:
                 self.sandbox.open_browser(default_url)
+                steps.append({"kind": "open", "url": default_url})
+                action_log.append({"action": "open", "url": default_url})
             else:
-                steps.append({"kind": "open", "url": self.sandbox.current_url or default_url, "details": "kept the current browser tab open for the requested site flow"})
-                action_log.append({"action": "open", "url": self.sandbox.current_url or default_url, "details": "kept the current browser tab open for the requested site flow"})
+                steps.append({"kind": "open", "url": self.sandbox.current_url, "details": "kept the current browser tab open on the requested site"})
+                action_log.append({"action": "open", "url": self.sandbox.current_url, "details": "kept the current browser tab open on the requested site"})
         elif "open" in lowered or "visit" in lowered or "browse" in lowered:
-            open_url = self.sandbox.current_url or url or "site"
-            steps.append({"kind": "open", "url": open_url, "details": "opened the site before browsing"})
-            action_log.append({"action": "open", "url": open_url, "details": "opened the site before browsing"})
+            if not self.sandbox.current_url:
+                return {
+                    "status": "unsupported",
+                    "task": instruction,
+                    "message": "Please name the site or include its URL so I know what to open.",
+                    "steps": [],
+                }
+            steps.append({"kind": "open", "url": self.sandbox.current_url, "details": "the requested site is already open"})
+            action_log.append({"action": "open", "url": self.sandbox.current_url, "details": "the requested site is already open"})
 
         if self.sandbox.page is None:
             self.sandbox._ensure_browser()
@@ -689,46 +723,6 @@ class BrowserAgent:
                         "action_log": action_log,
                         "result": result_state,
                     }
-
-        if "xeramail" in lowered or "send" in lowered:
-            fill_targets = [
-                ("to", "hello@example.com"),
-                ("subject", "Test message"),
-                ("message", "hello there"),
-                ("body", "hello there"),
-            ]
-            for field_name, value in fill_targets:
-                for element in state.get("elements", []):
-                    element_id = str(element.get("id", "") or "").lower()
-                    if field_name in element_id or field_name in str(element.get("label", "") or "").lower() or field_name in str(element.get("text", "") or "").lower():
-                        self.sandbox.execute_action({"action": "fill", "target": element["id"], "value": value})
-                        action_log.append({"action": "fill", "target": element["id"], "value": value})
-                        steps.append({"kind": "fill", "target": element["id"], "value": value})
-                        break
-
-            for element in state.get("elements", []):
-                element_id = str(element.get("id", "") or "").lower()
-                text = str(element.get("text", "") or "").lower()
-                if "send" in element_id or "send" in text or element.get("type") == "button":
-                    self.sandbox.execute_action({"action": "click", "target": element["id"]})
-                    action_log.append({"action": "click", "target": element["id"]})
-                    steps.append({"kind": "click", "target": element["id"]})
-                    break
-
-            if action_log:
-                result_state = self.sandbox.get_state()
-                steps.append({"kind": "observe", "details": "verified the compose page state after filling and sending"})
-                action_log.append({"action": "observe", "details": "verified the compose page state after filling and sending"})
-                return {
-                    "status": "ok",
-                    "task": instruction,
-                    "url": self.sandbox.current_url,
-                    "interaction_style": "human_like",
-                    "step_count": len(steps),
-                    "steps": steps,
-                    "action_log": action_log,
-                    "result": result_state,
-                }
 
         if click_target:
             target_element = None
@@ -770,6 +764,19 @@ class BrowserAgent:
                 "steps": steps,
                 "action_log": action_log,
                 "result": result_state,
+            }
+
+        if not any(step.get("kind") in {"open", "fill", "click"} for step in steps) and not any(
+            word in lowered for word in ["inspect", "read", "results", "summarize"]
+        ):
+            return {
+                "status": "unsupported",
+                "task": instruction,
+                "url": self.sandbox.current_url,
+                "message": "I could not identify a supported browser action for this request, so I made no changes.",
+                "step_count": len(steps),
+                "steps": steps,
+                "result": state,
             }
 
         if not action_log:
@@ -960,7 +967,6 @@ class SandboxedVM:
             "div[aria-label*='document' i]",
             "div[aria-label*='content' i]",
             "div[aria-label*='text' i]",
-            "body",
         ]
 
         matches = []
@@ -969,13 +975,13 @@ class SandboxedVM:
                 locator = self.page.locator(selector)
                 if locator.count() == 0:
                     continue
-                if selector == "body":
-                    matches.append(selector)
-                    continue
                 for idx in range(min(locator.count(), 6)):
                     element = locator.nth(idx)
                     try:
-                        if element.is_visible():
+                        is_editable = element.evaluate(
+                            "(el) => el.isContentEditable || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA'"
+                        )
+                        if element.is_visible() and is_editable:
                             matches.append(selector)
                             break
                     except Exception:
@@ -1102,7 +1108,7 @@ class SandboxedVM:
 
         selectors = [target_selector] if target_selector else []
         if target_selector == "body":
-            selectors.extend(self.find_editable_targets() or ["body"])
+            selectors = self.find_editable_targets()
 
         last_error = None
         for selector in selectors:
@@ -1110,12 +1116,11 @@ class SandboxedVM:
                 locator = self.page.locator(selector)
                 if locator.count() == 0:
                     continue
-                locator.first.click(timeout=10000)
-                locator.first.evaluate(
-                    "(element, text) => { element.innerText = text; element.textContent = text; element.dispatchEvent(new InputEvent('input', {bubbles: true})); }",
-                    value,
-                )
-                return {"status": "ok", "selector": selector, "value": value}
+                locator.first.fill(value)
+                current_value = locator.first.evaluate("(element) => element.value ?? element.innerText")
+                if value not in current_value:
+                    continue
+                return {"status": "ok", "selector": selector, "value": value, "verified_in_editor": True}
             except Exception as exc:
                 last_error = exc
                 continue
@@ -1165,7 +1170,7 @@ class SandboxedVM:
 
             selectors = [target_selector] if target_selector else []
             if target_selector == "body":
-                selectors.extend(self.find_editable_targets() or ["body"])
+                selectors = self.find_editable_targets()
 
             last_error = None
             for candidate in selectors:
@@ -1173,12 +1178,11 @@ class SandboxedVM:
                     locator = self.page.locator(candidate)
                     if locator.count() == 0:
                         continue
-                    locator.first.click(timeout=10000)
-                    locator.first.evaluate(
-                        "(element, text) => { element.innerText = text; element.textContent = text; element.dispatchEvent(new InputEvent('input', {bubbles: true})); }",
-                        text_value,
-                    )
-                    return {"status": "ok", "action": action_type, "target": candidate, "value": text_value}
+                    locator.first.fill(text_value)
+                    current_value = locator.first.evaluate("(element) => element.value ?? element.innerText")
+                    if text_value not in current_value:
+                        continue
+                    return {"status": "ok", "action": action_type, "target": candidate, "value": text_value, "verified_in_editor": True}
                 except Exception as exc:
                     last_error = exc
                     continue

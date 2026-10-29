@@ -12,6 +12,8 @@ from server import (
     get_gemini_model,
     get_gmail_status,
     infer_browser_target,
+    is_cryptpad_edit_url,
+    is_cryptpad_sheet_creation,
     parse_doc_paste_task,
     parse_email_task,
     read_google_doc_summary,
@@ -285,13 +287,38 @@ def test_parse_email_task_extracts_recipient_and_body():
     assert result["subject"]
 
 
+def test_cryptpad_edit_url_requires_full_key():
+    assert is_cryptpad_edit_url("https://cryptpad.fr/sheet/#/2/sheet/edit/secretEditKey/")
+    assert not is_cryptpad_edit_url("https://cryptpad.fr/sheet/#/2/sheet/edit/")
+    assert not is_cryptpad_edit_url("https://example.com/sheet/#/2/sheet/edit/secretEditKey/")
+
+
+def test_cryptpad_sheet_creation_requires_explicit_new_sheet_request():
+    assert is_cryptpad_sheet_creation("Create a new spreadsheet in CryptPad")
+    assert is_cryptpad_sheet_creation("Make a new CryptPad sheet")
+    assert not is_cryptpad_sheet_creation("Open my existing CryptPad spreadsheet")
+    assert not is_cryptpad_sheet_creation("Create a new Google Sheet")
+
+
+def test_playwright_proxy_can_select_iframe_content():
+    sandbox = SandboxedVM()
+    sandbox.open_browser(
+        "data:text/html,<iframe src='data:text/html,%3Cbutton%3EInside%3C%2Fbutton%3E'></iframe>"
+    )
+
+    button = sandbox.page.frame_locator("iframe").locator("button")
+    assert button.inner_text() == "Inside"
+
+    sandbox.close_browser()
+
+
 def test_infer_browser_target_detects_xeramail():
     target = infer_browser_target("go to xeramail and send a note to hello@example.com")
 
     assert target == "https://xeramail.com/"
 
 
-def test_browser_agent_handles_xeramail_compose_flow():
+def test_browser_agent_requires_confirmed_email_flow_instead_of_submitting_forms():
     sandbox = SandboxedVM()
     sandbox.open_browser(
         "data:text/html,<html><body><input id='to' /><input id='subject' /><textarea id='message'></textarea><button id='send'>Send</button></body></html>"
@@ -300,9 +327,10 @@ def test_browser_agent_handles_xeramail_compose_flow():
 
     result = agent.run("Use xeramail to send hello@example.com a message saying hello there", url=None)
 
-    assert result["status"] == "ok"
-    assert any(entry.get("action") == "fill" and "to" in str(entry.get("target", "")) for entry in result["action_log"])
-    assert any(entry.get("action") == "click" for entry in result["action_log"])
+    assert result["status"] == "unsupported"
+    assert "review-and-send" in result["message"]
+    assert result["action_log"] == []
+    assert sandbox.page.input_value("#to") == ""
 
     sandbox.close_browser()
 
@@ -439,7 +467,7 @@ def test_sandbox_can_attempt_google_doc_paste():
 
 def test_sandbox_finds_google_doc_like_editable_targets():
     sandbox = SandboxedVM()
-    sandbox.open_browser("data:text/html,<html><body><div role='textbox' aria-label='Document content'>Start</div></body></html>")
+    sandbox.open_browser("data:text/html,<html><body><div role='textbox' contenteditable='true' aria-label='Document content'>Start</div></body></html>")
 
     candidates = sandbox.find_editable_targets()
     assert candidates

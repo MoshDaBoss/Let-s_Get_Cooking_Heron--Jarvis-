@@ -1,9 +1,12 @@
 import base64
+import ipaddress
 import json
 import os
 import re
+import secrets
 import sys
 import tempfile
+import time
 from email.mime.text import MIMEText
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -15,6 +18,7 @@ from jarvis import BrowserAgent, MemoryManager, SandboxedVM, SYSTEM_PROMPT, is_b
 ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 WEB_ROOT = ROOT / "_internal" if getattr(sys, "frozen", False) and (ROOT / "_internal").exists() else ROOT
 MEMORY_MANAGER = MemoryManager(ROOT / "jarvis.db")
+OAUTH_STATE: str | None = None
 DEFAULT_GEMINI_MODELS = (
     "gemini-3.6-flash",
 )
@@ -174,7 +178,6 @@ def build_dom_paste_plan(prompt: str, auth_account: str | None = None) -> dict:
         "div[contenteditable='true']",
         "[role='textbox']",
         "textarea",
-        "body",
     ]
 
     return {
@@ -229,7 +232,7 @@ def read_google_doc_summary(document_url: str | None) -> dict:
         title = "Google Doc"
         if "docs.google.com/document" in url.lower():
             title = "Google Doc"
-        summary = re.sub(r"\s+", " ", export_text)[:1800].strip()
+        summary = re.sub(r"\s+", " ", export_text)[:12000].strip()
         return {
             "status": "ok",
             "url": url,
@@ -244,9 +247,11 @@ def read_google_doc_summary(document_url: str | None) -> dict:
         if page is None:
             return {"status": "error", "message": "The browser could not load the document."}
 
+        if "accounts.google.com" in (page.url or "").lower():
+            return {"status": "error", "message": "This Google Doc requires an authenticated Google session. The current JARVIS document reader does not have one."}
         title = (page.title() or "Google Doc").strip() or "Google Doc"
         body_text = (page.locator("body").inner_text() or "").strip()
-        summary = re.sub(r"\s+", " ", body_text)[:1800].strip()
+        summary = re.sub(r"\s+", " ", body_text)[:12000].strip()
         return {
             "status": "ok",
             "url": page.url,
@@ -369,7 +374,7 @@ def load_gemini_key():
     return get_env_value("GEMINI_API_KEY")
 
 
-def build_google_auth_url() -> str:
+def build_google_auth_url(state: str | None = None) -> str:
     client_id = get_env_value("GOOGLE_CLIENT_ID") or ""
     if not client_id:
         return ""
@@ -393,6 +398,8 @@ def build_google_auth_url() -> str:
         "prompt": "consent",
         "include_granted_scopes": "true",
     }
+    if state:
+        params["state"] = state
     return "https://accounts.google.com/o/oauth2/v2/auth?" + parse.urlencode(params)
 
 
@@ -560,6 +567,77 @@ def classify_browser_route(prompt: str, api_key: str | None = None, context: lis
     return {"route": "chat", "source": "fallback"}
 
 
+def is_cryptpad_sheet_creation(prompt: str) -> bool:
+    """Match explicit requests to create a new CryptPad spreadsheet."""
+    text = (prompt or "").lower()
+    asks_for_cryptpad = "cryptpad" in text
+    asks_for_sheet = bool(re.search(r"\b(sheet|sheets|spreadsheet)\b", text))
+    asks_to_create = bool(re.search(r"\b(create|make|new|start|generate)\b", text))
+    return asks_for_cryptpad and asks_for_sheet and asks_to_create
+
+
+def is_cryptpad_edit_url(url: str) -> bool:
+    """Require the full CryptPad v2 edit key in the returned share URL."""
+    try:
+        parsed = parse.urlsplit(url)
+        parts = [part for part in parsed.fragment.strip("/").split("/") if part]
+        return (
+            parsed.scheme == "https"
+            and parsed.hostname == "cryptpad.fr"
+            and parsed.path.rstrip("/") == "/sheet"
+            and len(parts) >= 4
+            and parts[:3] == ["2", "sheet", "edit"]
+            and bool(parts[3])
+        )
+    except (AttributeError, ValueError):
+        return False
+
+
+def create_cryptpad_sheet(timeout_seconds: int = 45) -> dict:
+    """Create a blank sheet in CryptPad and return its full edit link."""
+    sandbox = SandboxedVM()
+    try:
+        # CryptPad's /sheet/ route creates anonymously or shows its in-app
+        # creation screen for signed-in users.
+        sandbox.open_browser("https://cryptpad.fr/sheet/")
+        page = sandbox.page
+        if page is None:
+            return {"status": "error", "message": "CryptPad did not open."}
+
+        creation_frame = page.frame_locator("#sbox-iframe")
+        create_button = creation_frame.locator("#cp-creation .cp-creation-button-selected")
+        deadline = time.monotonic() + timeout_seconds
+        creation_clicked = False
+        while time.monotonic() < deadline:
+            current_url = page.url or ""
+            if is_cryptpad_edit_url(current_url):
+                return {"status": "ok", "url": current_url}
+
+            # Signed-in CryptPad accounts show a creation screen inside the
+            # sandbox iframe; anonymous users create immediately on /sheet/.
+            if not creation_clicked and create_button.count() > 0:
+                create_button.click()
+                creation_clicked = True
+                deadline = time.monotonic() + timeout_seconds
+                continue
+
+            if "/login/" in current_url:
+                return {
+                    "status": "error",
+                    "message": "CryptPad requires sign-in before it can create this sheet.",
+                }
+            time.sleep(0.25)
+
+        return {
+            "status": "error",
+            "message": "CryptPad did not finish creating a sheet, so JARVIS has no complete share URL to return.",
+        }
+    except Exception as exc:
+        return {"status": "error", "message": f"Unable to create a CryptPad sheet: {exc}"}
+    finally:
+        sandbox.close_browser()
+
+
 def infer_browser_target(prompt: str) -> str | None:
     """Infer the intended site for a browser task while keeping it generic."""
     text = (prompt or "").strip()
@@ -702,16 +780,60 @@ class AppHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(WEB_ROOT), **kwargs)
 
+    def _allow_local_api_request(self) -> bool:
+        """Reject LAN and cross-origin requests to the local-control API."""
+        try:
+            if not ipaddress.ip_address(self.client_address[0]).is_loopback:
+                return False
+        except (ValueError, IndexError):
+            return False
+
+        host = (self.headers.get("Host") or "").strip()
+        try:
+            host_name = parse.urlsplit("//" + host).hostname
+            if not host_name:
+                return False
+            host_is_loopback = host_name.lower() == "localhost" or ipaddress.ip_address(host_name).is_loopback
+            if not host_is_loopback:
+                return False
+        except ValueError:
+            return False
+
+        origin = self.headers.get("Origin")
+        is_oauth_callback = self.path.split("?", 1)[0] == "/api/google-auth/callback"
+        if origin and not is_oauth_callback:
+            try:
+                parsed_origin = parse.urlsplit(origin)
+                origin_host = parsed_origin.hostname or ""
+                origin_is_loopback = origin_host.lower() == "localhost" or ipaddress.ip_address(origin_host).is_loopback
+                if parsed_origin.scheme != "http" or not origin_is_loopback:
+                    return False
+                if parsed_origin.netloc.lower() != host.lower():
+                    return False
+            except ValueError:
+                return False
+        return True
+
+    def _reject_nonlocal_api_request(self) -> bool:
+        if not self._allow_local_api_request():
+            self._send_json(403, {"error": "This local API accepts same-origin requests from this computer only."})
+            return True
+        return False
+
     def do_GET(self):
         parsed = parse.urlparse(self.path)
+        if parsed.path.startswith("/api/") and self._reject_nonlocal_api_request():
+            return
 
         if parsed.path == "/api/google-auth/start":
             try:
+                global OAUTH_STATE
                 status = get_gmail_status()
                 if status["status"] == "not_configured":
                     self._send_json(400, status)
                     return
-                self._send_json(200, {"status": "ok", "auth_url": status.get("auth_url") or build_google_auth_url()})
+                OAUTH_STATE = secrets.token_urlsafe(32)
+                self._send_json(200, {"status": "ok", "auth_url": build_google_auth_url(state=OAUTH_STATE)})
                 return
             except Exception as exc:
                 self._send_json(500, {"error": str(exc)})
@@ -727,10 +849,16 @@ class AppHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/google-auth/callback":
             try:
-                code = parse.parse_qs(parsed.query).get("code", [""])[0]
+                query = parse.parse_qs(parsed.query)
+                code = query.get("code", [""])[0]
+                returned_state = query.get("state", [""])[0]
                 if not code:
                     self._send_json(400, {"error": "Missing OAuth code."})
                     return
+                if not OAUTH_STATE or not returned_state or not secrets.compare_digest(returned_state, OAUTH_STATE):
+                    self._send_json(403, {"error": "OAuth state validation failed. Start Google sign-in again."})
+                    return
+                OAUTH_STATE = None
 
                 client_id = get_env_value("GOOGLE_CLIENT_ID")
                 client_secret = get_env_value("GOOGLE_CLIENT_SECRET")
@@ -791,6 +919,30 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = parse.urlparse(self.path)
+        if parsed.path.startswith("/api/") and self._reject_nonlocal_api_request():
+            return
+
+        if parsed.path == "/api/email/send":
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                recipient = str(payload.get("recipient", "")).strip()
+                subject = str(payload.get("subject", "")).strip()
+                body = str(payload.get("body", "")).strip()
+                if not re.fullmatch(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", recipient):
+                    self._send_json(400, {"error": "A valid recipient address is required."})
+                    return
+                tokens = load_google_oauth_tokens()
+                access_token = (tokens or {}).get("access_token")
+                if not access_token:
+                    self._send_json(401, {"error": "Connect Gmail before sending a message."})
+                    return
+                result = send_gmail_message(recipient, subject, body, access_token=access_token)
+                status = 200 if result.get("status") == "ok" else 502
+                self._send_json(status, result)
+            except Exception as exc:
+                self._send_json(500, {"error": str(exc)})
+            return
 
         if parsed.path == "/api/chat":
             try:
@@ -816,7 +968,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                     auth_account = MEMORY_MANAGER.get_auth_account()
                     sandbox_result = run_google_doc_paste(prompt, auth_account=auth_account)
                     if sandbox_result and sandbox_result.get("status") == "ok":
-                        self._send_json(200, {"reply": f"Pasted into the Google Doc at {sandbox_result['url']} with the requested text."})
+                        self._send_json(200, {"reply": f"Inserted the text in the editor at {sandbox_result['url']}. Please verify Google Docs saved the change."})
                         return
                     if sandbox_result and sandbox_result.get("status") == "pending_login":
                         self._send_json(200, {"reply": sandbox_result["message"]})
@@ -848,34 +1000,31 @@ class AppHandler(SimpleHTTPRequestHandler):
                 if memory_context:
                     context = list(context) + memory_context
 
-                email_task = parse_email_task(prompt)
-                if email_task.get("recipient"):
-                    tokens = load_google_oauth_tokens()
-                    access_token = (tokens or {}).get("access_token")
-                    if not access_token:
-                        status = get_gmail_status()
+                if is_cryptpad_sheet_creation(prompt):
+                    sheet_result = create_cryptpad_sheet()
+                    if sheet_result.get("status") == "ok":
+                        sheet_url = sheet_result["url"]
                         self._send_json(200, {
-                            "reply": f"Email sending requires Google authentication. {status.get('message', '')}",
-                            "gmail_status": status,
-                        })
-                        return
-
-                    result = send_gmail_message(
-                        recipient=email_task["recipient"],
-                        subject=email_task.get("subject") or "Message from JARVIS",
-                        body=email_task.get("body") or "Hello!",
-                        access_token=access_token,
-                    )
-                    if result.get("status") == "ok":
-                        self._send_json(200, {
-                            "reply": f"Sent an email to {email_task['recipient']} with the requested message.",
-                            "gmail_result": result,
+                            "reply": f"Created a new CryptPad spreadsheet. Open it here: {sheet_url}",
+                            "cryptpad_result": sheet_result,
                         })
                     else:
                         self._send_json(200, {
-                            "reply": result.get("message", "Unable to send the email."),
-                            "gmail_result": result,
+                            "reply": sheet_result.get("message", "I could not create the CryptPad spreadsheet."),
+                            "cryptpad_result": sheet_result,
                         })
+                    return
+
+                email_task = parse_email_task(prompt)
+                if email_task.get("recipient"):
+                    self._send_json(200, {
+                        "reply": "Review this draft and explicitly choose Send before Jarvis sends it.",
+                        "email_draft": {
+                            "recipient": email_task["recipient"],
+                            "subject": email_task.get("subject") or "Message from JARVIS",
+                            "body": email_task.get("body") or "Hello!",
+                        },
+                    })
                     return
 
                 route_decision = classify_browser_route(prompt, api_key=api_key, context=context)
@@ -884,9 +1033,13 @@ class AppHandler(SimpleHTTPRequestHandler):
                     agent = BrowserAgent(sandbox=sandbox)
                     default_url = infer_browser_target(prompt)
                     agent_result = agent.run(prompt, url=default_url)
-                    summary = agent_result.get("result", {}).get("page_text") or agent_result.get("result", {}).get("title") or "Browser task completed."
+                    summary = agent_result.get("result", {}).get("page_text") or agent_result.get("result", {}).get("title") or ""
+                    if agent_result.get("status") != "ok":
+                        reply_text = agent_result.get("message") or "I could not complete that browser action."
+                    else:
+                        reply_text = f"Browser task completed: {summary[:2000]}" if summary else "Browser task completed."
                     browser_reply = {
-                        "reply": f"Browser task completed: {summary[:2000]}",
+                        "reply": reply_text,
                         "browser_result": agent_result,
                     }
                     self._send_json(200, browser_reply)
@@ -990,12 +1143,13 @@ class AppHandler(SimpleHTTPRequestHandler):
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         self.wfile.write(body)
 
 
 if __name__ == "__main__":
-    server = ThreadingHTTPServer(("0.0.0.0", 8000), AppHandler)
+    server = ThreadingHTTPServer(("127.0.0.1", 8000), AppHandler)
     print("JARVIS server running on http://localhost:8000")
     server.serve_forever()
