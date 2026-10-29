@@ -6,6 +6,7 @@ import re
 import secrets
 import sys
 import tempfile
+import time
 from email.mime.text import MIMEText
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -566,6 +567,77 @@ def classify_browser_route(prompt: str, api_key: str | None = None, context: lis
     return {"route": "chat", "source": "fallback"}
 
 
+def is_cryptpad_sheet_creation(prompt: str) -> bool:
+    """Match explicit requests to create a new CryptPad spreadsheet."""
+    text = (prompt or "").lower()
+    asks_for_cryptpad = "cryptpad" in text
+    asks_for_sheet = bool(re.search(r"\b(sheet|sheets|spreadsheet)\b", text))
+    asks_to_create = bool(re.search(r"\b(create|make|new|start|generate)\b", text))
+    return asks_for_cryptpad and asks_for_sheet and asks_to_create
+
+
+def is_cryptpad_edit_url(url: str) -> bool:
+    """Require the full CryptPad v2 edit key in the returned share URL."""
+    try:
+        parsed = parse.urlsplit(url)
+        parts = [part for part in parsed.fragment.strip("/").split("/") if part]
+        return (
+            parsed.scheme == "https"
+            and parsed.hostname == "cryptpad.fr"
+            and parsed.path.rstrip("/") == "/sheet"
+            and len(parts) >= 4
+            and parts[:3] == ["2", "sheet", "edit"]
+            and bool(parts[3])
+        )
+    except (AttributeError, ValueError):
+        return False
+
+
+def create_cryptpad_sheet(timeout_seconds: int = 45) -> dict:
+    """Create a blank sheet in CryptPad and return its full edit link."""
+    sandbox = SandboxedVM()
+    try:
+        # CryptPad's /sheet/ route creates anonymously or shows its in-app
+        # creation screen for signed-in users.
+        sandbox.open_browser("https://cryptpad.fr/sheet/")
+        page = sandbox.page
+        if page is None:
+            return {"status": "error", "message": "CryptPad did not open."}
+
+        creation_frame = page.frame_locator("#sbox-iframe")
+        create_button = creation_frame.locator("#cp-creation .cp-creation-button-selected")
+        deadline = time.monotonic() + timeout_seconds
+        creation_clicked = False
+        while time.monotonic() < deadline:
+            current_url = page.url or ""
+            if is_cryptpad_edit_url(current_url):
+                return {"status": "ok", "url": current_url}
+
+            # Signed-in CryptPad accounts show a creation screen inside the
+            # sandbox iframe; anonymous users create immediately on /sheet/.
+            if not creation_clicked and create_button.count() > 0:
+                create_button.click()
+                creation_clicked = True
+                deadline = time.monotonic() + timeout_seconds
+                continue
+
+            if "/login/" in current_url:
+                return {
+                    "status": "error",
+                    "message": "CryptPad requires sign-in before it can create this sheet.",
+                }
+            time.sleep(0.25)
+
+        return {
+            "status": "error",
+            "message": "CryptPad did not finish creating a sheet, so JARVIS has no complete share URL to return.",
+        }
+    except Exception as exc:
+        return {"status": "error", "message": f"Unable to create a CryptPad sheet: {exc}"}
+    finally:
+        sandbox.close_browser()
+
+
 def infer_browser_target(prompt: str) -> str | None:
     """Infer the intended site for a browser task while keeping it generic."""
     text = (prompt or "").strip()
@@ -927,6 +999,21 @@ class AppHandler(SimpleHTTPRequestHandler):
                 memory_context = strip_doc_context(build_memory_context(MEMORY_MANAGER))
                 if memory_context:
                     context = list(context) + memory_context
+
+                if is_cryptpad_sheet_creation(prompt):
+                    sheet_result = create_cryptpad_sheet()
+                    if sheet_result.get("status") == "ok":
+                        sheet_url = sheet_result["url"]
+                        self._send_json(200, {
+                            "reply": f"Created a new CryptPad spreadsheet. Open it here: {sheet_url}",
+                            "cryptpad_result": sheet_result,
+                        })
+                    else:
+                        self._send_json(200, {
+                            "reply": sheet_result.get("message", "I could not create the CryptPad spreadsheet."),
+                            "cryptpad_result": sheet_result,
+                        })
+                    return
 
                 email_task = parse_email_task(prompt)
                 if email_task.get("recipient"):
