@@ -188,8 +188,18 @@ class PageProxy(_PlaywrightObject):
     def input_value(self, selector):
         return self.locator(selector).input_value()
 
+    def frame_locator(self, selector):
+        result = self._call("frame_locator", selector)
+        return FrameLocatorProxy(self._worker, result._ref_id)
+
     def screenshot(self, *args, **kwargs):
         return self._call("screenshot", *args, **kwargs)
+
+
+class FrameLocatorProxy(_PlaywrightObject):
+    def locator(self, selector):
+        result = self._call("locator", selector)
+        return LocatorProxy(self._worker, result._ref_id)
 
 
 class LocatorProxy(_PlaywrightObject):
