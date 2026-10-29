@@ -64,6 +64,10 @@ AI_BASE_URL=https://api.example.com/v1
 AI_MODEL=your-model-name
 ```
 
+## CryptPad spreadsheets
+
+Ask JARVIS to create a new spreadsheet in CryptPad. It opens CryptPad's Sheet app, creates a blank sheet, and returns the complete edit URL in chat. The URL includes the edit key, so anyone who has it can access the sheet; share it carefully.
+
 ## Architecture
 
 The system is organized into three layers:
