@@ -233,6 +233,47 @@ async function attachFiles() {
   renderContextItems();
 }
 
+function appendTextWithLinks(element, value) {
+  const text = String(value ?? '');
+  const urlPattern = /https?:\/\/[^\s<>"']+/gi;
+  let cursor = 0;
+  let match;
+
+  while ((match = urlPattern.exec(text)) !== null) {
+    const rawUrl = match[0];
+    const url = rawUrl.replace(/[.,!?;:)]+$/, '');
+    if (!url) {
+      continue;
+    }
+
+    element.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      element.appendChild(document.createTextNode(rawUrl));
+      cursor = match.index + rawUrl.length;
+      continue;
+    }
+
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      const anchor = document.createElement('a');
+      anchor.href = parsed.href;
+      anchor.textContent = url;
+      anchor.target = '_blank';
+      anchor.rel = 'noopener noreferrer';
+      element.appendChild(anchor);
+      element.appendChild(document.createTextNode(rawUrl.slice(url.length)));
+    } else {
+      element.appendChild(document.createTextNode(rawUrl));
+    }
+    cursor = match.index + rawUrl.length;
+  }
+
+  element.appendChild(document.createTextNode(text.slice(cursor)));
+}
+
+
 function appendMessage(text, role = 'assistant') {
   const wrapper = document.createElement('div');
   wrapper.className = `message ${role}`;
@@ -244,7 +285,7 @@ function appendMessage(text, role = 'assistant') {
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
   const paragraph = document.createElement('p');
-  paragraph.textContent = String(text ?? '');
+  appendTextWithLinks(paragraph, text);
   bubble.appendChild(paragraph);
 
   wrapper.appendChild(avatar);
