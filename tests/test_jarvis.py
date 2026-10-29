@@ -12,6 +12,8 @@ from server import (
     get_gemini_model,
     get_gmail_status,
     infer_browser_target,
+    is_cryptpad_edit_url,
+    is_cryptpad_sheet_creation,
     parse_doc_paste_task,
     parse_email_task,
     read_google_doc_summary,
@@ -283,6 +285,31 @@ def test_parse_email_task_extracts_recipient_and_body():
     assert result["recipient"] == "foo@example.com"
     assert "hello" in result["body"].lower()
     assert result["subject"]
+
+
+def test_cryptpad_edit_url_requires_full_key():
+    assert is_cryptpad_edit_url("https://cryptpad.fr/sheet/#/2/sheet/edit/secretEditKey/")
+    assert not is_cryptpad_edit_url("https://cryptpad.fr/sheet/#/2/sheet/edit/")
+    assert not is_cryptpad_edit_url("https://example.com/sheet/#/2/sheet/edit/secretEditKey/")
+
+
+def test_cryptpad_sheet_creation_requires_explicit_new_sheet_request():
+    assert is_cryptpad_sheet_creation("Create a new spreadsheet in CryptPad")
+    assert is_cryptpad_sheet_creation("Make a new CryptPad sheet")
+    assert not is_cryptpad_sheet_creation("Open my existing CryptPad spreadsheet")
+    assert not is_cryptpad_sheet_creation("Create a new Google Sheet")
+
+
+def test_playwright_proxy_can_select_iframe_content():
+    sandbox = SandboxedVM()
+    sandbox.open_browser(
+        "data:text/html,<iframe src='data:text/html,%3Cbutton%3EInside%3C%2Fbutton%3E'></iframe>"
+    )
+
+    button = sandbox.page.frame_locator("iframe").locator("button")
+    assert button.inner_text() == "Inside"
+
+    sandbox.close_browser()
 
 
 def test_infer_browser_target_detects_xeramail():
